@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import cv2
 import json
+import random
 
 # ---------------------------
 # 1️⃣ PATH CONFIGURATION
@@ -171,3 +172,39 @@ for class_name in classes:
    
 
 print("\n✅ Dataset exploration complete!")
+
+# ---------------------------
+# 🔀 PLAY A RANDOM VIDEO
+# ---------------------------
+
+def play_random_video(folder, classes):
+    if os.path.exists(folder):
+        random_class = random.choice(classes)
+        class_folder = os.path.join(folder, random_class)
+        if os.path.exists(class_folder):
+            videos = [v for v in os.listdir(class_folder) if v.endswith('.avi')]
+            if videos:
+                random_video = random.choice(videos)
+                video_path = os.path.join(class_folder, random_video)
+                print(f"\n🎥 Playing random video: {random_class}/{random_video}")
+
+                cap = cv2.VideoCapture(video_path)
+                while cap.isOpened():
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    cv2.imshow('Random Video', frame)
+                    if cv2.waitKey(25) & 0xFF == ord('q'):
+                        break
+                cap.release()
+                cv2.destroyAllWindows()
+            else:
+                print(f"\n⚠️ No videos found in {random_class} folder.")
+        else:
+            print(f"\n⚠️ Class folder {random_class} not found.")
+    else:
+        print("\n⚠️ Specified folder not found!")
+
+# Example: Play a random video from RGB folder
+play_random_video(rgb_folder, classes)
+
