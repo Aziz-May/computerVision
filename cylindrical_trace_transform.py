@@ -4,16 +4,6 @@ import numpy as np
 import random
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from matplotlib.animation import FuncAnimation
-import pickle
-
-# Import CTT (make sure the file is in the same directory)
-try:
-    from cylindrical_trace_transform import CylindricalTraceTransform, load_stips_from_file
-    CTT_AVAILABLE = True
-except ImportError:
-    print("⚠️ Warning: cylindrical_trace_transform.py not found. CTT features will not be computed.")
-    CTT_AVAILABLE = False
 
 # ---------------------------
 # PATH CONFIGURATION
@@ -65,13 +55,10 @@ def get_largest_component(mask):
 # 3D HARRIS CORNER (STIP) DETECTION
 # ---------------------------
 def detect_harris_3d_stip(frame_buffer, fg_masks, sigma_spatial=2.0, sigma_temporal=1.5, threshold=0.0001):
-    """
-    Detect Spatio-Temporal Interest Points using 3D Harris corner detection
-    """
+    """Detect Spatio-Temporal Interest Points using 3D Harris corner detection"""
     if len(frame_buffer) < 3:
         return []
     
-    # Stack frames to create 3D volume
     volume = np.stack(frame_buffer, axis=2).astype(np.float32)
     combined_mask = fg_masks[len(fg_masks)//2]
     
@@ -148,9 +135,7 @@ def detect_harris_3d_stip(frame_buffer, fg_masks, sigma_spatial=2.0, sigma_tempo
 # EXTRACT ALL STIPS FROM VIDEO
 # ---------------------------
 def extract_all_stips(video_path, class_name, video_name, crop_percent=0.15, temporal_window=5):
-    """
-    Extract all STIPs from the entire video and store them with time coordinate
-    """
+    """Extract all STIPs from the entire video"""
     print(f"🎥 Processing: {class_name}/{video_name}")
     
     cap = cv2.VideoCapture(video_path)
@@ -166,7 +151,7 @@ def extract_all_stips(video_path, class_name, video_name, crop_percent=0.15, tem
     fg_mask_buffer = []
     frame_count = 0
     
-    all_stips = []  # Store all STIPs with (x, y, t, response)
+    all_stips = []
     
     while True:
         ret, frame = cap.read()
@@ -194,7 +179,6 @@ def extract_all_stips(video_path, class_name, video_name, crop_percent=0.15, tem
         
         if len(frame_buffer) == temporal_window:
             stips = detect_harris_3d_stip(frame_buffer, fg_mask_buffer)
-            # Add global time coordinate
             for x, y, t_local, response in stips:
                 all_stips.append((x, y, frame_count, response))
         
@@ -207,143 +191,117 @@ def extract_all_stips(video_path, class_name, video_name, crop_percent=0.15, tem
     return all_stips, total_frames
 
 # ---------------------------
-# VISUALIZE 3D POINT CLOUD
+# 3D CYLINDRICAL TRACE TRANSFORM
 # ---------------------------
-def visualize_3d_stip_cloud(all_stips, total_frames, class_name):
+def cylindrical_trace_transform_3d(all_stips, num_angles=36, num_radii=50):
     """
-    Create an interactive 3D point cloud visualization of STIPs
+    Apply 3D Cylindrical Trace Transform to STIPs
+    
+    The cylindrical transform maps 3D points (x, y, t) to cylindrical coordinates (r, θ, z)
+    where z is time, and we compute traces (functional values) along cylindrical shells.
     """
     if len(all_stips) == 0:
-        print("⚠️ No STIPs to visualize!")
-        return
+        print("⚠️ No STIPs to transform!")
+        return None
+    
+    print(f"\n🔄 Applying 3D Cylindrical Trace Transform...")
+    print(f"   Angles: {num_angles}, Radii: {num_radii}")
     
     # Extract coordinates
-    xs = [s[0] for s in all_stips]
-    ys = [s[1] for s in all_stips]
-    ts = [s[2] for s in all_stips]
-    responses = [s[3] for s in all_stips]
+    xs = np.array([s[0] for s in all_stips])
+    ys = np.array([s[1] for s in all_stips])
+    ts = np.array([s[2] for s in all_stips])
+    responses = np.array([s[3] for s in all_stips])
     
-    # Normalize responses for color mapping (invert for darker = less movement)
-    responses_norm = np.array(responses)
-    if responses_norm.max() > 0:
-        responses_norm = (responses_norm - responses_norm.min()) / (responses_norm.max() - responses_norm.min())
-        # Invert: 1 - normalized value (darker = less movement)
-        responses_norm = 1 - responses_norm
+    # Center the spatial coordinates
+    center_x = (xs.max() + xs.min()) / 2
+    center_y = (ys.max() + ys.min()) / 2
     
-    # Create 3D plot
-    fig = plt.figure(figsize=(14, 10))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_facecolor('black')
-    fig.patch.set_facecolor('black')
+    xs_centered = xs - center_x
+    ys_centered = ys - center_y
     
-    # Plot point cloud with blue gradient only (no white)
-    scatter = ax.scatter(xs, ys, ts, c=responses_norm, cmap='Blues_r', s=10, alpha=0.8, vmin=0, vmax=1)
+    # Convert to cylindrical coordinates (r, θ, z)
+    # r = distance from center axis (parallel to time)
+    # θ = angle around the axis
+    # z = time coordinate
+    radii = np.sqrt(xs_centered**2 + ys_centered**2)
+    angles = np.arctan2(ys_centered, xs_centered)  # [-pi, pi]
     
-    ax.set_xlabel('X (spatial)', fontsize=12, color='white')
-    ax.set_ylabel('Y (spatial)', fontsize=12, color='white')
-    ax.set_zlabel('Time (frames)', fontsize=12, color='white')
-    ax.set_title(f'3D STIP Cloud - {class_name}\nTotal Points: {len(all_stips)}', 
-                 fontsize=14, fontweight='bold', color='white')
+    # Normalize angles to [0, 2π]
+    angles = (angles + np.pi) % (2 * np.pi)
     
-    # Change axis colors to white
-    ax.tick_params(colors='white')
-    ax.xaxis.pane.fill = False
-    ax.yaxis.pane.fill = False
-    ax.zaxis.pane.fill = False
-    ax.xaxis.pane.set_edgecolor('white')
-    ax.yaxis.pane.set_edgecolor('white')
-    ax.zaxis.pane.set_edgecolor('white')
-    ax.grid(color='gray', linestyle='--', linewidth=0.5)
+    # Create trace transform matrix
+    max_radius = radii.max()
+    trace_matrix = np.zeros((num_angles, num_radii))
+    trace_counts = np.zeros((num_angles, num_radii))
     
-    # Add colorbar
-    cbar = plt.colorbar(scatter, ax=ax, pad=0.1, shrink=0.8)
-    cbar.set_label('Movement Strength (darker = less)', rotation=270, labelpad=20, color='blue')
-    cbar.ax.yaxis.set_tick_params(color='white')
-    plt.setp(plt.getp(cbar.ax.axes, 'yticklabels'), color='white')
+    # Bin STIPs into (angle, radius) cells and accumulate responses
+    for i in range(len(all_stips)):
+        angle_idx = int((angles[i] / (2 * np.pi)) * num_angles) % num_angles
+        radius_idx = int((radii[i] / max_radius) * (num_radii - 1))
+        
+        trace_matrix[angle_idx, radius_idx] += responses[i]
+        trace_counts[angle_idx, radius_idx] += 1
     
-    # Set viewing angle
-    ax.view_init(elev=20, azim=45)
+    # Average the responses in each bin
+    mask = trace_counts > 0
+    trace_matrix[mask] /= trace_counts[mask]
     
-    plt.tight_layout()
-    plt.savefig('stip_3d_cloud.png', dpi=150, bbox_inches='tight')
-    print("💾 Saved 3D cloud as 'stip_3d_cloud.png'")
-    plt.show()
+    print(f"✅ Transform complete!")
+    print(f"   Max trace value: {trace_matrix.max():.6f}")
+    print(f"   Non-zero cells: {np.sum(trace_counts > 0)} / {num_angles * num_radii}")
     
-    # Create animated rotating view
-    print("\n🔄 Creating rotating animation...")
-    fig2 = plt.figure(figsize=(12, 10))
-    ax2 = fig2.add_subplot(111, projection='3d')
-    
-    def update_view(frame):
-        ax2.clear()
-        ax2.scatter(xs, ys, ts, c=responses_norm, cmap='Blues_r', s=10, alpha=0.6, vmin=0, vmax=1)
-        ax2.set_xlabel('X (spatial)', fontsize=12)
-        ax2.set_ylabel('Y (spatial)', fontsize=12)
-        ax2.set_zlabel('Time (frames)', fontsize=12)
-        ax2.set_title(f'3D STIP Cloud - {class_name} (Rotating)', fontsize=14, fontweight='bold')
-        ax2.view_init(elev=20, azim=frame)
-        return ax2,
-    
-    anim = FuncAnimation(fig2, update_view, frames=np.arange(0, 360, 2), interval=50)
-    anim.save('stip_3d_cloud_rotating.gif', writer='pillow', fps=20)
-    print("💾 Saved rotating animation as 'stip_3d_cloud_rotating.gif'")
-    plt.show()
+    return trace_matrix, radii, angles, max_radius
 
 # ---------------------------
-# COMPUTE CTT FEATURES
+# VISUALIZE CYLINDRICAL TRACE TRANSFORM
 # ---------------------------
-def compute_ctt_features(all_stips, class_name):
-    """
-    Compute Cylindrical Trace Transform features from STIPs
-    """
-    if not CTT_AVAILABLE:
-        print("⚠️ CTT module not available. Skipping feature extraction.")
-        return None
+def visualize_cylindrical_transform(trace_matrix, class_name):
+    """Visualize the 3D Cylindrical Trace Transform as a 2D heatmap"""
     
-    if len(all_stips) == 0:
-        print("⚠️ No STIPs to process!")
-        return None
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    fig.patch.set_facecolor('black')
     
-    print("\n" + "="*60)
-    print("COMPUTING CYLINDRICAL TRACE TRANSFORM FEATURES")
-    print("="*60)
+    # Heatmap representation
+    im1 = axes[0].imshow(trace_matrix, aspect='auto', cmap='Blues_r', origin='lower')
+    axes[0].set_xlabel('Radius', fontsize=12, color='white')
+    axes[0].set_ylabel('Angle (bins)', fontsize=12, color='white')
+    axes[0].set_title(f'Cylindrical Trace Transform - {class_name}', 
+                      fontsize=14, fontweight='bold', color='white')
+    axes[0].set_facecolor('black')
+    axes[0].tick_params(colors='white')
+    cbar1 = plt.colorbar(im1, ax=axes[0])
+    cbar1.set_label('Trace Value', rotation=270, labelpad=20, color='white')
+    cbar1.ax.yaxis.set_tick_params(color='white')
+    plt.setp(plt.getp(cbar1.ax.axes, 'yticklabels'), color='white')
     
-    # Initialize CTT extractor
-    ctt_extractor = CylindricalTraceTransform(theta_step=9, p_bins=80, phi_bins=120)
+    # Polar representation
+    ax_polar = plt.subplot(122, projection='polar')
+    ax_polar.set_facecolor('black')
     
-    # Compute feature vector
-    try:
-        feature_vector, triple_features = ctt_extractor.compute_feature_vector(all_stips)
-        
-        print(f"\n✅ Feature extraction complete for {class_name}!")
-        print(f"   Number of triple features: {len(triple_features)}")
-        print(f"   Feature vector length: {len(feature_vector)}")
-        print(f"   Feature vector sample (first 5): {feature_vector[:5]}")
-        
-        # Save features
-        output_filename = f'features_{class_name}.npy'
-        np.save(output_filename, feature_vector)
-        print(f"💾 Saved feature vector to '{output_filename}'")
-        
-        # Also save the raw data
-        data = {
-            'stips': all_stips,
-            'feature_vector': feature_vector,
-            'triple_features': triple_features,
-            'class_name': class_name
-        }
-        pkl_filename = f'data_{class_name}.pkl'
-        with open(pkl_filename, 'wb') as f:
-            pickle.dump(data, f)
-        print(f"💾 Saved complete data to '{pkl_filename}'")
-        
-        return feature_vector
-        
-    except Exception as e:
-        print(f"❌ Error computing CTT features: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+    # Create polar mesh
+    num_angles, num_radii = trace_matrix.shape
+    theta = np.linspace(0, 2*np.pi, num_angles)
+    r = np.linspace(0, 1, num_radii)
+    Theta, R = np.meshgrid(theta, r)
+    
+    # Plot
+    im2 = ax_polar.contourf(Theta, R, trace_matrix.T, levels=20, cmap='Blues_r')
+    ax_polar.set_title(f'Polar View - {class_name}', fontsize=14, fontweight='bold', 
+                       color='white', pad=20)
+    ax_polar.tick_params(colors='white')
+    ax_polar.spines['polar'].set_color('white')
+    ax_polar.grid(color='gray', linestyle='--', linewidth=0.5)
+    
+    cbar2 = plt.colorbar(im2, ax=ax_polar, pad=0.1)
+    cbar2.set_label('Trace Value', rotation=270, labelpad=20, color='white')
+    cbar2.ax.yaxis.set_tick_params(color='white')
+    plt.setp(plt.getp(cbar2.ax.axes, 'yticklabels'), color='white')
+    
+    plt.tight_layout()
+    plt.savefig('cylindrical_trace_transform.png', dpi=150, bbox_inches='tight', facecolor='black')
+    print("💾 Saved transform as 'cylindrical_trace_transform.png'")
+    plt.show()
 
 # ---------------------------
 # MAIN EXECUTION
@@ -352,33 +310,19 @@ if __name__ == "__main__":
     video_path, class_name, video_name = get_random_video()
     
     if video_path:
-        # Step 1: Extract all STIPs
+        # Extract all STIPs
         all_stips, total_frames = extract_all_stips(video_path, class_name, video_name)
         
         if len(all_stips) > 0:
-            # Step 2: Save STIPs to file
-            print("\n💾 Saving STIPs to file...")
-            with open('stips_data.pkl', 'wb') as f:
-                pickle.dump(all_stips, f)
-            print("✅ STIPs saved to 'stips_data.pkl'")
+            # Apply cylindrical trace transform
+            result = cylindrical_trace_transform_3d(all_stips)
             
-            # Step 3: Visualize 3D cloud
-            print("\n" + "="*60)
-            print("VISUALIZING STIP CLOUD")
-            print("="*60)
-            visualize_3d_stip_cloud(all_stips, total_frames, class_name)
-            
-            # Step 4: Compute CTT features
-            feature_vector = compute_ctt_features(all_stips, class_name)
-            
-            if feature_vector is not None:
-                print("\n" + "="*60)
-                print("✨ PIPELINE COMPLETED SUCCESSFULLY!")
-                print("="*60)
-                print(f"📊 Extracted {len(all_stips)} STIPs")
-                print(f"🔢 Generated {len(feature_vector)} features")
-                print(f"🎯 Action class: {class_name}")
+            if result is not None:
+                trace_matrix, radii, angles, max_radius = result
+                
+                # Visualize
+                visualize_cylindrical_transform(trace_matrix, class_name)
         else:
-            print("⚠️ No STIPs detected in video!")
+            print("⚠️ No STIPs detected!")
     else:
         print("⚠️ No video found!")
