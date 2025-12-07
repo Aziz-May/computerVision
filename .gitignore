@@ -1,4 +1,8 @@
 
-dataset/
+dataset/*
+*.pth
+*.pkl
+*.npy
+
 
 venv/
